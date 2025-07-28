@@ -1,17 +1,5 @@
 
 
-```markdown
-# Music Suggestion API Documentation
-
-## Overview
-This API provides music suggestions based on a given song name using the YouTube Data API. It is built with **FastAPI** and hosted on **Render**.
-
-## Base URL
-```
-https://your-service-name.onrender.com
-```
-Replace `your-service-name` with your actual Render service name.
-
 ---
 
 ## Endpoints
@@ -74,7 +62,6 @@ curl -X GET "https://your-service-name.onrender.com/health"
 
 ### Prerequisites
 - Ensure you have a valid **YouTube Data API key** set as an environment variable (`YOUTUBE_API_KEY`) on Render.
-- Replace `your-service-name` with your actual Render service name.
 
 ### JavaScript Example (Frontend)
 ```
@@ -122,21 +109,4 @@ getMusicSuggestions("Bohemian Rhapsody").then(suggestions => {
    - Push your code to a GitHub repository.
    - Connect the repository to Render and deploy.
 
----
-
-## Notes
-
-- **Rate Limiting:** The API is rate-limited to 10 calls per minute to prevent abuse.
-- **Caching:** Responses are cached for 1 hour to reduce API calls and improve performance.
-- **Error Handling:** The API includes robust error handling and logging.
-- **Swagger UI:** Access interactive API documentation at:
-  ```
-  https://your-service-name.onrender.com/docs
-  ```
-
----
-
-## Support
-~For further assistance, contact the API maintainer or consult Render's documentation.~ no assistance provided by me 
-```
 
