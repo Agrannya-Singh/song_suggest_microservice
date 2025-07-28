@@ -59,7 +59,7 @@ class LikedSongsRequest(BaseModel):
 
 # Cache and rate limit settings
 CACHE_TTL = 3600  # Cache results for 1 hour
-RATE_LIMIT_CALLS = 10  # API calls per minute
+RATE_LIMIT_CALLS = 100  # API calls per minute
 RATE_LIMIT_PERIOD = 60  # Seconds
 
 @sleep_and_retry
