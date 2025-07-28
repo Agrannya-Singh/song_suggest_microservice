@@ -1,31 +1,25 @@
 import os
 import requests
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Optional, Dict
-from functools import lru_cache
-from ratelimit import limits, sleep_and_retry
 import logging
 import re
 from collections import Counter
+from functools import lru_cache
+from typing import List, Dict, Optional
+
+from fastapi import FastAPI
+from pydantic import BaseModel
+from fastapi_socketio import SocketManager  # pip install fastapi-socketio
+from ratelimit import limits, sleep_and_retry
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Enhanced Music Suggestion API",
-    description="API to manage liked songs and get music suggestions based on multiple liked songs using YouTube Data API",
+    title="Enhanced Music Suggestion Socket.IO API",
+    description="Socket.IO API to manage liked songs and get music suggestions based on liked songs using YouTube Data API",
     version="1.1.0"
 )
 
-# Configure CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Adjust for production
-    allow_credentials=True,
-    allow_methods=["GET", "POST"],
-    allow_headers=["*"],
-)
+# Attach Socket.IO manager to FastAPI app
+socket_manager = SocketManager(app=app)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -37,37 +31,25 @@ YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 # In-memory store for liked songs (user_id -> list of songs)
 liked_songs_store: Dict[str, List[str]] = {}
 
-# Pydantic models
-class Song(BaseModel):
-    song_name: str
+# Cache and rate limit settings
+CACHE_TTL = 3600  # 1 hour (used for lru_cache expiration indirectly)
+RATE_LIMIT_CALLS = 100
+RATE_LIMIT_PERIOD = 60  # seconds
 
+# Pydantic models (used for validation or serialization)
 class SongSuggestion(BaseModel):
     title: str
     artist: str
     youtube_video_id: str
     score: float
 
-class SuggestionResponse(BaseModel):
-    suggestions: List[SongSuggestion]
-
-class LikedSongsResponse(BaseModel):
-    liked_songs: List[str]
-
-class LikedSongsRequest(BaseModel):
-    user_id: str
-    songs: List[str]
-
-# Cache and rate limit settings
-CACHE_TTL = 3600  # Cache results for 1 hour
-RATE_LIMIT_CALLS = 100  # API calls per minute
-RATE_LIMIT_PERIOD = 60  # Seconds
 
 @sleep_and_retry
 @limits(calls=RATE_LIMIT_CALLS, period=RATE_LIMIT_PERIOD)
 @lru_cache(maxsize=100)
 def get_youtube_suggestions(song_name: str) -> Optional[List[dict]]:
     """
-    Fetch music suggestions from YouTube based on a song name with improved filtering.
+    Fetch music suggestions from YouTube based on a song name with filtering and scoring.
     """
     try:
         # Step 1: Search for the song
@@ -101,20 +83,23 @@ def get_youtube_suggestions(song_name: str) -> Optional[List[dict]]:
             logger.warning(f"No related videos found for video ID: {original_video_id}")
             return None
 
-        # Step 3: Filter and score suggestions
-        suggestions = []
         unwanted_keywords = ['live', 'cover', 'remix', 'karaoke', 'instrumental']
+        suggestions = []
+
         for item in related_items:
             title = item["snippet"]["title"].lower()
-            # Skip irrelevant videos
+            # Skip if unwanted keyword present
             if any(keyword in title for keyword in unwanted_keywords):
                 continue
-            # Simple scoring based on title similarity and channel
-            score = 1.0
+
+            score = 1.0  
+            # Boost for title similarity
             if any(word in title for word in original_title.split()):
-                score += 0.5  # Boost for title similarity
+                score += 0.5
+            # Boost for same artist/channel
             if item["snippet"]["channelTitle"].lower() == original_video["snippet"]["channelTitle"].lower():
-                score += 0.3  # Boost for same artist/channel
+                score += 0.3
+
             suggestions.append({
                 "title": item["snippet"]["title"],
                 "artist": item["snippet"]["channelTitle"],
@@ -127,12 +112,14 @@ def get_youtube_suggestions(song_name: str) -> Optional[List[dict]]:
         logger.error(f"Error fetching suggestions for {song_name}: {str(e)}")
         return None
 
+
 def combine_suggestions(song_names: List[str]) -> List[dict]:
     """
     Combine suggestions from multiple songs and rank by score.
     """
     all_suggestions = []
-    video_id_set = set()  # Track unique suggestions
+    video_id_set = set()
+
     for song in song_names:
         suggestions = get_youtube_suggestions(song)
         if suggestions:
@@ -141,47 +128,73 @@ def combine_suggestions(song_names: List[str]) -> List[dict]:
                     all_suggestions.append(suggestion)
                     video_id_set.add(suggestion["youtube_video_id"])
 
-    # Rank suggestions by score and limit to 5
+    # Sort by score descending and limit to top 5
     ranked_suggestions = sorted(all_suggestions, key=lambda x: x["score"], reverse=True)[:5]
     return ranked_suggestions
 
-@app.get(
-    "/liked-songs",
-    response_model=LikedSongsResponse,
-    summary="Get liked songs",
-    description="Returns the list of liked songs for a given user ID"
-)
-async def get_liked_songs(user_id: str = Query(..., min_length=1, description="User ID to fetch liked songs")):
+
+# ===============================
+# Socket.IO event handlers
+# ===============================
+
+@socket_manager.on('connect')
+async def on_connect(sid, environ):
+    logger.info(f"Client connected: {sid}")
+    await socket_manager.emit('connect_response', {'message': 'Connected successfully!'}, to=sid)
+
+
+@socket_manager.on('disconnect')
+def on_disconnect(sid):
+    logger.info(f"Client disconnected: {sid}")
+
+
+@socket_manager.on('get_liked_songs')
+async def handle_get_liked_songs(sid, data):
     """
-    Fetch the list of liked songs for a user.
+    Client sends: {"user_id": "some_user_id"}
+    Server responds with liked songs list.
     """
+    user_id = data.get('user_id')
+    if not user_id:
+        await socket_manager.emit('error', {'error': 'user_id is required'}, to=sid)
+        return
+
     liked_songs = liked_songs_store.get(user_id, [])
-    return JSONResponse(content={"liked_songs": liked_songs})
+    await socket_manager.emit('liked_songs_response', {'liked_songs': liked_songs}, to=sid)
 
-@app.post(
-    "/suggestions",
-    response_model=SuggestionResponse,
-    summary="Get suggestions based on liked songs",
-    description="Returns suggestions based on a list of liked songs for a user"
-)
-async def post_suggestions(request: LikedSongsRequest):
+
+@socket_manager.on('post_suggestions')
+async def handle_post_suggestions(sid, data):
     """
-    Post liked songs and get combined suggestions.
+    Client sends: {"user_id": "some_user_id", "songs": ["song1", "song2", ...]}
+    Server responds with music suggestions.
     """
+    user_id = data.get('user_id')
+    songs = data.get('songs')
+
     if not YOUTUBE_API_KEY:
-        raise HTTPException(status_code=500, detail="YouTube API key not configured")
+        await socket_manager.emit('suggestions_error', {'error': 'YouTube API key not configured'}, to=sid)
+        return
 
-    # Store liked songs
-    liked_songs_store[request.user_id] = request.songs
+    if not user_id or not songs or not isinstance(songs, list) or len(songs) == 0:
+        await socket_manager.emit('suggestions_error', {'error': 'user_id and non-empty songs list are required'}, to=sid)
+        return
+
+    # Store liked songs for user
+    liked_songs_store[user_id] = songs
 
     # Get combined suggestions
-    suggestions = combine_suggestions(request.songs)
+    suggestions = combine_suggestions(songs)
+
     if not suggestions:
-        raise HTTPException(status_code=404, detail="No suggestions found for the given songs")
+        await socket_manager.emit('suggestions_error', {'error': 'No suggestions found for the given songs'}, to=sid)
+        return
 
-    return JSONResponse(content={"suggestions": suggestions})
+    serialized = [SongSuggestion(**s).dict() for s in suggestions]
 
-@app.get("/health", summary="Health check")
-async def health_check():
-    """Check if the API is running"""
-    return {"status": "healthy"}
+    await socket_manager.emit('suggestions_response', {'suggestions': serialized}, to=sid)
+
+
+@socket_manager.on('health_check')
+async def handle_health_check(sid):
+    await socket_manager.emit('health_status', {'status': 'healthy'}, to=sid)
