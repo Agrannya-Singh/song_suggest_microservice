@@ -6,12 +6,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict
 from functools import lru_cache
-from ratelimit import limits, sleep_and_retry
 import logging
 import re
 import urllib.parse
 import time
 import random
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -36,6 +39,12 @@ logger = logging.getLogger(__name__)
 # Environment variable for YouTube API key
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 
+# Validate API key at startup
+if not YOUTUBE_API_KEY:
+    logger.warning("YouTube API key not found. Please set YOUTUBE_API_KEY environment variable.")
+else:
+    logger.info("YouTube API key loaded successfully.")
+
 # In-memory store for liked songs
 liked_songs_store: Dict[str, List[str]] = {}
 
@@ -59,10 +68,8 @@ class LikedSongsRequest(BaseModel):
     user_id: str
     songs: List[str]
 
-# Cache and rate limit settings
+# Cache settings
 CACHE_TTL = 3600
-RATE_LIMIT_CALLS = 100
-RATE_LIMIT_PERIOD = 60
 
 # --- START OF NEW FALLBACK FUNCTION ---
 def get_popular_song_fallback() -> Optional[List[dict]]:

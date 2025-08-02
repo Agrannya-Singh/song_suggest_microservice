@@ -1,20 +1,12 @@
-
-
 ---
 
 ## Endpoints
 
-### 1. Get Music Suggestions
+### 🎵 Enhanced Music Suggestion API
 
-- **Endpoint:** `/suggestions`
-- **Method:** GET
-- **Description:** Returns a list of up to 5 suggested songs based on the input song name.
-- **Query Parameters:**
-  - `song_name` (string, required): The name of the song to base suggestions on.
+A FastAPI-based service that provides personalized music suggestions using the YouTube Data API v3. The API analyzes your liked songs and suggests similar music, with a fallback to popular songs when no matches are found.
 
-#### Example Request
-```
-curl -X GET "https://your-service-name.onrender.com/suggestions?song_name=Bohemian%20Rhapsody"
+## ✨ Features
 ```
 
 #### Example Response
