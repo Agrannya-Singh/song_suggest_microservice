@@ -12,11 +12,11 @@ import urllib.parse
 import time
 import random
 from dotenv import load_dotenv
-from ratelimit import limits, sleep_and_retry  # Add imports for ratelimit decorators
+from ratelimit import limits, sleep_and_retry
 
 # Define rate-limiting constants
-RATE_LIMIT_CALLS = 100  # Number of allowed API calls
-RATE_LIMIT_PERIOD = 60  # Time period in seconds (e.g., 100 calls per minute)
+RATE_LIMIT_CALLS = 100
+RATE_LIMIT_PERIOD = 60
 
 # Load environment variables from .env file
 load_dotenv()
@@ -76,11 +76,10 @@ class LikedSongsRequest(BaseModel):
 # Cache settings
 CACHE_TTL = 3600
 
-# --- START OF NEW FALLBACK FUNCTION ---
-def get_popular_song_fallback() -> Optional[List[dict]]:
+def get_popular_song_fallback(input_songs: List[str] = None) -> Optional[List[dict]]:
     """
     Fetches a popular music video from YouTube's charts as a fallback.
-    Filters for videos with more than 100 million views.
+    Filters for videos with more than 100 million views and excludes input songs.
     """
     logger.info("Executing fallback: searching for a popular song.")
     try:
@@ -98,6 +97,9 @@ def get_popular_song_fallback() -> Optional[List[dict]]:
             logger.warning("Fallback could not retrieve any popular songs.")
             return None
 
+        # Normalize input song titles for comparison
+        normalized_input_songs = {re.sub(r'[^\w\s]', '', song).lower().strip() for song in (input_songs or [])}
+
         # Filter for songs with over 100 million views
         popular_songs_high_views = [
             item for item in items
@@ -107,22 +109,37 @@ def get_popular_song_fallback() -> Optional[List[dict]]:
         if not popular_songs_high_views:
             logger.warning("No songs with over 100M views in the current popular chart, returning from top of chart.")
             if items:
-                song = random.choice(items)
-                return [{
-                    "title": song["snippet"]["title"],
-                    "artist": song["snippet"]["channelTitle"],
-                    "youtube_video_id": song["id"],
-                    "score": 1.0
-                }]
+                # Select a song that doesn't match input songs
+                valid_songs = [
+                    item for item in items
+                    if re.sub(r'[^\w\s]', '', item["snippet"]["title"]).lower().strip() not in normalized_input_songs
+                ]
+                if valid_songs:
+                    song = random.choice(valid_songs)
+                    return [{
+                        "title": song["snippet"]["title"],
+                        "artist": song["snippet"]["channelTitle"],
+                        "youtube_video_id": song["id"],
+                        "score": 1.0
+                    }]
+                return None
             return None
 
-        song = random.choice(popular_songs_high_views)
-        return [{
-            "title": song["snippet"]["title"],
-            "artist": song["snippet"]["channelTitle"],
-            "youtube_video_id": song["id"],
-            "score": 1.0
-        }]
+        # Select a song that doesn't match input songs
+        valid_songs = [
+            item for item in popular_songs_high_views
+            if re.sub(r'[^\w\s]', '', item["snippet"]["title"]).lower().strip() not in normalized_input_songs
+        ]
+        if valid_songs:
+            song = random.choice(valid_songs)
+            return [{
+                "title": song["snippet"]["title"],
+                "artist": song["snippet"]["channelTitle"],
+                "youtube_video_id": song["id"],
+                "score": 1.0
+            }]
+        logger.warning("No valid fallback songs found that don't match input songs.")
+        return None
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Network error during fallback search: {str(e)}")
@@ -130,7 +147,6 @@ def get_popular_song_fallback() -> Optional[List[dict]]:
     except Exception as e:
         logger.error(f"Unexpected error during fallback: {str(e)}")
         return None
-# --- END OF NEW FALLBACK FUNCTION ---
 
 @sleep_and_retry
 @limits(calls=RATE_LIMIT_CALLS, period=RATE_LIMIT_PERIOD)
@@ -241,21 +257,27 @@ def get_youtube_suggestions(song_name: str) -> Optional[List[dict]]:
 def combine_suggestions(song_names: List[str]) -> List[dict]:
     """
     Combine suggestions from multiple songs, rank by score, and ensure uniqueness.
+    Excludes suggestions that match input song titles.
     If no suggestions are found, it triggers a fallback to popular songs.
     """
     all_suggestions = []
     video_id_set = set()
+    # Normalize input song titles for comparison
+    normalized_input_songs = {re.sub(r'[^\w\s]', '', song).lower().strip() for song in song_names}
+
     for song in song_names:
         suggestions = get_youtube_suggestions(song)
         if suggestions:
             for suggestion in suggestions:
-                if suggestion["youtube_video_id"] not in video_id_set:
+                normalized_suggestion_title = re.sub(r'[^\w\s]', '', suggestion["title"]).lower().strip()
+                if (suggestion["youtube_video_id"] not in video_id_set and 
+                    normalized_suggestion_title not in normalized_input_songs):
                     all_suggestions.append(suggestion)
                     video_id_set.add(suggestion["youtube_video_id"])
 
     if not all_suggestions:
         logger.info("No suggestions found from liked songs, triggering fallback.")
-        fallback_suggestions = get_popular_song_fallback()
+        fallback_suggestions = get_popular_song_fallback(song_names)
         if fallback_suggestions:
             return fallback_suggestions
 
@@ -284,7 +306,7 @@ async def get_liked_songs(user_id: str = Query(..., min_length=1, description="U
     "/suggestions",
     response_model=SuggestionResponse,
     summary="Get suggestions based on liked songs",
-    description="Returns suggestions based on a list of liked songs for a user. Falls back to popular songs if no matches are found."
+    description="Returns suggestions based on a list of liked songs for a user, excluding the input songs. Falls back to popular songs if no matches are found."
 )
 async def post_suggestions(request: LikedSongsRequest):
     if not YOUTUBE_API_KEY:
