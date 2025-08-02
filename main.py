@@ -12,6 +12,11 @@ import urllib.parse
 import time
 import random
 from dotenv import load_dotenv
+from ratelimit import limits, sleep_and_retry  # Add imports for ratelimit decorators
+
+# Define rate-limiting constants
+RATE_LIMIT_CALLS = 100  # Number of allowed API calls
+RATE_LIMIT_PERIOD = 60  # Time period in seconds (e.g., 100 calls per minute)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -79,8 +84,6 @@ def get_popular_song_fallback() -> Optional[List[dict]]:
     """
     logger.info("Executing fallback: searching for a popular song.")
     try:
-        # Use the 'videos' endpoint with the 'mostPopular' chart for the music category
-        # The 'videos' endpoint with chart='mostPopular' is a reliable way to get popular videos. [8]
         fallback_url = (
             f"https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics"
             f"&chart=mostPopular&videoCategoryId=10&maxResults=50&key={YOUTUBE_API_KEY}"
@@ -103,26 +106,22 @@ def get_popular_song_fallback() -> Optional[List[dict]]:
 
         if not popular_songs_high_views:
             logger.warning("No songs with over 100M views in the current popular chart, returning from top of chart.")
-            # If no song has 100M+ views, return a random one from the initial popular list
             if items:
                 song = random.choice(items)
                 return [{
                     "title": song["snippet"]["title"],
                     "artist": song["snippet"]["channelTitle"],
                     "youtube_video_id": song["id"],
-                    "score": 1.0  # Assign a base score
+                    "score": 1.0
                 }]
             return None
 
-
-        # Select a random song from the highly popular list
         song = random.choice(popular_songs_high_views)
-
         return [{
             "title": song["snippet"]["title"],
             "artist": song["snippet"]["channelTitle"],
             "youtube_video_id": song["id"],
-            "score": 1.0  # Assign a base score
+            "score": 1.0
         }]
 
     except requests.exceptions.RequestException as e:
@@ -141,11 +140,9 @@ def get_youtube_suggestions(song_name: str) -> Optional[List[dict]]:
     Fetch music suggestions from YouTube with improved filtering and genre-based scoring.
     """
     try:
-        # Normalize song name and create a more specific query
         song_name = re.sub(r'[^\w\s]', '', song_name).lower().strip()
         query = urllib.parse.quote(f"{song_name} official music video")
 
-        # Step 1: Search for the song
         search_url = (
             f"https://www.googleapis.com/youtube/v3/search?part=snippet&q={query}&type=video"
             f"&videoCategoryId=10&maxResults=5&key={YOUTUBE_API_KEY}"
@@ -168,7 +165,6 @@ def get_youtube_suggestions(song_name: str) -> Optional[List[dict]]:
         original_title = original_video["snippet"]["title"].lower()
         original_channel = original_video["snippet"]["channelTitle"].lower()
 
-        # Step 2: Fetch video details for duration
         video_url = (
             f"https://www.googleapis.com/youtube/v3/videos?part=contentDetails,statistics"
             f"&id={original_video_id}&key={YOUTUBE_API_KEY}"
@@ -179,7 +175,6 @@ def get_youtube_suggestions(song_name: str) -> Optional[List[dict]]:
             return None
         video_details = video_resp.json().get('items', [{}])[0]
 
-        # Step 3: Find related videos
         related_url = (
             f"https://www.googleapis.com/youtube/v3/search?part=snippet&relatedToVideoId={original_video_id}"
             f"&type=video&videoCategoryId=10&maxResults=20&key={YOUTUBE_API_KEY}"
@@ -193,7 +188,6 @@ def get_youtube_suggestions(song_name: str) -> Optional[List[dict]]:
             logger.warning(f"No related videos found for video ID: {original_video_id}")
             return None
 
-        # Step 4: Filter and score suggestions
         suggestions = []
         unwanted_keywords = ['live', 'cover', 'remix', 'karaoke', 'instrumental', 'tutorial', 'reaction', 'lyrics']
         for item in related_items:
@@ -220,7 +214,6 @@ def get_youtube_suggestions(song_name: str) -> Optional[List[dict]]:
             if "PT" in video_duration and minutes < 1:
                 continue
 
-            # Scoring
             score = 1.0
             if "official video" in title or "official music video" in title:
                 score += 0.8
@@ -245,7 +238,6 @@ def get_youtube_suggestions(song_name: str) -> Optional[List[dict]]:
         logger.error(f"Unexpected error for {song_name}: {str(e)}")
         return None
 
-# --- MODIFIED combine_suggestions TO INCLUDE FALLBACK ---
 def combine_suggestions(song_names: List[str]) -> List[dict]:
     """
     Combine suggestions from multiple songs, rank by score, and ensure uniqueness.
@@ -261,14 +253,12 @@ def combine_suggestions(song_names: List[str]) -> List[dict]:
                     all_suggestions.append(suggestion)
                     video_id_set.add(suggestion["youtube_video_id"])
 
-    # If no suggestions after checking all songs, use the fallback
     if not all_suggestions:
         logger.info("No suggestions found from liked songs, triggering fallback.")
         fallback_suggestions = get_popular_song_fallback()
         if fallback_suggestions:
             return fallback_suggestions
 
-    # Rank and deduplicate
     ranked_suggestions = sorted(all_suggestions, key=lambda x: x["score"], reverse=True)
     unique_suggestions = []
     seen_titles = set()
@@ -290,7 +280,6 @@ async def get_liked_songs(user_id: str = Query(..., min_length=1, description="U
     liked_songs = liked_songs_store.get(user_id, [])
     return JSONResponse(content={"liked_songs": liked_songs})
 
-# --- MODIFIED post_suggestions FOR BETTER ERROR HANDLING ---
 @app.post(
     "/suggestions",
     response_model=SuggestionResponse,
