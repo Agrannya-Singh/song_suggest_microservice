@@ -1,16 +1,15 @@
 
 
-## Endpoints
+# Endpoints
 
-### 🎵 Enhanced Music Suggestion API
+## 🎵 Enhanced Music Suggestion API
 
 A FastAPI-based service that provides personalized music suggestions using the YouTube Data API v3. The API analyzes your liked songs and suggests similar music, with a fallback to popular songs when no matches are found.
 
-## ✨ Features
-```
+### ✨ Features
 
 #### Example Response
-```
+```json
 {
   "suggestions": [
     {
@@ -30,19 +29,19 @@ A FastAPI-based service that provides personalized music suggestions using the Y
 
 ---
 
-### 2. Health Check
+## Health Check
 
 - **Endpoint:** `/health`
 - **Method:** GET
 - **Description:** Checks if the API is running.
 
-#### Example Request
-```
+### Example Request
+```bash
 curl -X GET "https://song-suggest-microservice.onrender.com//health"
 ```
 
-#### Example Response
-```
+### Example Response
+```json
 {
   "status": "healthy"
 }
@@ -50,13 +49,13 @@ curl -X GET "https://song-suggest-microservice.onrender.com//health"
 
 ---
 
-## Frontend Integration
+# Frontend Integration
 
-### Prerequisites
+## Prerequisites
 - Ensure you have a valid **YouTube Data API key** set as an environment variable (`YOUTUBE_API_KEY`) on Render.
 
-### JavaScript Example (Frontend)
-```
+## JavaScript Example (Frontend)
+```javascript
 async function getMusicSuggestions(songName) {
   try {
     const response = await fetch(`https://song-suggest-microservice.onrender.com//suggestions?song_name=${encodeURIComponent(songName)}`);
@@ -79,18 +78,18 @@ getMusicSuggestions("Bohemian Rhapsody").then(suggestions => {
 
 ---
 
-## CORS Policy
+# CORS Policy
 - The API currently allows CORS from all origins (`*`) for development convenience.
 - For production, update the `allow_origins` in the CORS middleware to restrict access to only your frontend domains.
 
 ---
 
-## Deployment on Render
+# Deployment on Render
 
 1. **Create a Render Account:** Sign up at [render.com](https://render.com/).
 2. **Create a New Web Service:** Choose **Python** as the runtime.
 3. **Set the Start Command:**
-   ```
+   ```bash
    uvicorn main:app --host 0.0.0.0 --port $PORT
    ```
 4. **Add Environment Variables:**
@@ -100,5 +99,4 @@ getMusicSuggestions("Bohemian Rhapsody").then(suggestions => {
 6. **Deploy:**
    - Push your code to a GitHub repository.
    - Connect the repository to Render and deploy.
-
 
