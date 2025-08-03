@@ -38,7 +38,7 @@ A FastAPI-based service that provides personalized music suggestions using the Y
 
 #### Example Request
 ```
-curl -X GET "https://your-service-name.onrender.com/health"
+curl -X GET "https://song-suggest-microservice.onrender.com//health"
 ```
 
 #### Example Response
@@ -59,7 +59,7 @@ curl -X GET "https://your-service-name.onrender.com/health"
 ```
 async function getMusicSuggestions(songName) {
   try {
-    const response = await fetch(`https://your-service-name.onrender.com/suggestions?song_name=${encodeURIComponent(songName)}`);
+    const response = await fetch(`https://song-suggest-microservice.onrender.com//suggestions?song_name=${encodeURIComponent(songName)}`);
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
