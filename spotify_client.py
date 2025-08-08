@@ -13,20 +13,54 @@
 import os
 import requests
 import base64
+import re # Import the regular expressions module
 from functools import lru_cache
 from dotenv import load_dotenv
 
 # --- Initial Setup ---
 
-# Load environment variables from the .env file.
 load_dotenv()
-
-# Retrieve Spotify credentials from environment variables.
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
-
-# Base URL for all Spotify API endpoints.
 SPOTIFY_API_URL = "https://api.spotify.com/v1"
+
+# --- Helper Functions ---
+
+def _clean_song_name(song_name: str) -> str:
+    """
+    Cleans a song title to improve Spotify search accuracy.
+
+    This function removes common extraneous text like:
+    - Text in parentheses or brackets (e.g., "(Official Music Video)")
+    - Keywords like "lyric video", "official", "audio", "HD"
+    - Separators like " - " which often precede a channel name.
+
+    Args:
+        song_name (str): The raw song title.
+
+    Returns:
+        str: The cleaned song title.
+    """
+    # Remove text in parentheses and brackets
+    cleaned_name = re.sub(r'[\(\[].*?[\)\]]', '', song_name)
+
+    # Remove common keywords (case-insensitive)
+    keywords_to_remove = [
+        'official music video', 'official video', 'lyric video',
+        'lyrics', 'audio', 'hd', 'full', 'video', 'music'
+    ]
+    for keyword in keywords_to_remove:
+        cleaned_name = re.sub(r'\b' + re.escape(keyword) + r'\b', '', cleaned_name, flags=re.IGNORECASE)
+
+    # Remove the artist if it's separated by a hyphen, letting Spotify find it
+    # e.g., "Bon Jovi - It's My Life" becomes "It's My Life"
+    if ' - ' in cleaned_name:
+        cleaned_name = cleaned_name.split(' - ')[-1]
+
+
+    # Remove extra whitespace
+    return cleaned_name.strip()
+
 
 # --- Core Functions ---
 
@@ -34,66 +68,37 @@ SPOTIFY_API_URL = "https://api.spotify.com/v1"
 def get_spotify_token():
     """
     Fetches an access token from the Spotify API using the Client Credentials Flow.
-
-    This flow is used for server-to-server authentication where no user is
-    involved. The token is cached in memory using `@lru_cache` to avoid
-    unnecessary re-authentication for every API call. The cache size is 1
-    because the token is the same for the entire application.
-
-    Returns:
-        str: A Spotify API access token.
-
-    Raises:
-        requests.exceptions.HTTPError: If the request to Spotify fails.
     """
     auth_url = "https://accounts.spotify.com/api/token"
-
-    # Encode the client ID and secret as required by the Spotify API.
     auth_header = base64.b64encode(
         f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}".encode()
     ).decode()
-
-    # The body of the request to get the token.
     auth_data = {"grant_type": "client_credentials"}
-
-    # Make the POST request to the Spotify token endpoint.
     response = requests.post(
         auth_url,
         headers={"Authorization": f"Basic {auth_header}"},
         data=auth_data
     )
-
-    # Raise an exception if the request was not successful (e.g., 4xx or 5xx).
     response.raise_for_status()
-
-    # Extract and return the access token from the JSON response.
     return response.json()["access_token"]
 
 
 def search_for_song(song_name: str, artist: str = ""):
     """
-    Searches for a song on Spotify and returns its essential details.
-
-    Args:
-        song_name (str): The name of the song to search for.
-        artist (str, optional): The name of the artist to narrow down the search.
-
-    Returns:
-        dict | None: A dictionary containing the song's Spotify ID, name, and
-                      artist, or None if the song could not be found.
+    Searches for a song on Spotify using a cleaned title.
     """
-    # Get a valid access token.
+    # **THIS IS THE KEY CHANGE**: Clean the song name before searching.
+    cleaned_name = _clean_song_name(song_name)
+    print(f"INFO: Original name: '{song_name}', Cleaned name for search: '{cleaned_name}'")
+
     token = get_spotify_token()
     headers = {"Authorization": f"Bearer {token}"}
 
-    # Construct the search query.
-    query = f"track:{song_name} artist:{artist}" if artist else f"track:{song_name}"
+    query = f"track:{cleaned_name} artist:{artist}" if artist else f"track:{cleaned_name}"
     params = {"q": query, "type": "track", "limit": 1}
 
-    # Make the GET request to the Spotify search endpoint.
     response = requests.get(f"{SPOTIFY_API_URL}/search", headers=headers, params=params)
 
-    # Check if the request was successful and if any tracks were found.
     if response.status_code == 200 and response.json()["tracks"]["items"]:
         track = response.json()["tracks"]["items"][0]
         return {
@@ -107,23 +112,13 @@ def search_for_song(song_name: str, artist: str = ""):
 def get_audio_features(spotify_id: str):
     """
     Gets audio features for a given Spotify track ID.
-
-    Args:
-        spotify_id (str): The unique Spotify ID for the track.
-
-    Returns:
-        dict | None: A dictionary containing the desired audio features,
-                      or None if the features could not be retrieved.
     """
     token = get_spotify_token()
     headers = {"Authorization": f"Bearer {token}"}
-
-    # Make the GET request to the audio-features endpoint.
     response = requests.get(f"{SPOTIFY_API_URL}/audio-features/{spotify_id}", headers=headers)
 
     if response.status_code == 200:
         features = response.json()
-        # Return a dictionary with only the features we care about.
         return {
             "danceability": features.get("danceability"),
             "energy": features.get("energy"),
