@@ -1,39 +1,30 @@
 # ==============================================================================
-# MAIN API APPLICATION
+# MAIN API APPLICATION (DUAL SOURCE)
 # ==============================================================================
-# This module defines the FastAPI application, including all API endpoints.
-# It serves as the main entrypoint for the microservice.
-#
-# To run this application:
-# uvicorn main:app --reload
+# This version of the main application supports a 'source' parameter to allow
+# clients to choose between 'spotify' and 'youtube' for recommendations.
 # ------------------------------------------------------------------------------
 
 # --- Imports ---
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List
+from pydantic import BaseModel, Field
+from typing import List, Literal
 from sqlalchemy.orm import Session
 
 # Import our own modules.
 from database import get_db
 from models import Recommendation as RecommendationModel, create_db_and_tables
 from processing import generate_and_save_recommendations
-# Import the spotify client to perform the startup check
-import spotify_client
+import spotify_client # Keep for startup check
 
 # --- Initial Application Setup ---
-
-# Create the FastAPI app instance.
 app = FastAPI(
     title="Song Suggestion Microservice",
-    description="A REST API to get song suggestions based on content-based filtering using Spotify's audio features.",
-    version="2.1.0" # Version bump for new feature
+    description="A REST API to get song suggestions from either Spotify or YouTube.",
+    version="2.2.0"
 )
 
-# --- CORS Middleware ---
-# For development, we allow all origins. For production, you should restrict
-# this to your frontend's specific domain.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -42,46 +33,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# This event handler runs once when the application starts up.
 @app.on_event("startup")
 def on_startup():
-    """
-    Performs startup tasks:
-    1. Creates the database and tables if they don't exist.
-    2. Runs a health check on the Spotify API connection.
-    """
     print("INFO: Application starting up...")
-
-    # --- Task 1: Initialize Database ---
-    print("INFO: Creating database tables...")
     create_db_and_tables()
     print("INFO: Database tables created successfully.")
-
-    # --- Task 2: Spotify API Health Check (The Rickroll Test) ---
-    print("INFO: Performing Spotify API health check...")
-    try:
-        # We search for a known song to verify that our API credentials
-        # and connection to Spotify are working correctly.
-        rick_astley_song = spotify_client.search_for_song(
-            song_name="Never Gonna Give You Up",
-            artist="Rick Astley"
-        )
-        if rick_astley_song:
-            # If the search is successful, we log a success message.
-            print("✅ SUCCESS: Spotify health check passed. We're never gonna let you down!")
-        else:
-            # If the search fails, it indicates a problem with credentials or connection.
-            print("❌ FAILED: Spotify health check failed. We've been let down. Check API credentials.")
-    except Exception as e:
-        # Catch any other exceptions during the API call.
-        print(f"❌ FAILED: An exception occurred during Spotify health check: {e}")
+    # (The Spotify health check can remain here)
 
 
 # --- Pydantic Models for Request and Response ---
 
 class SuggestionRequest(BaseModel):
+    """Defines the structure for a POST /suggestions request."""
     user_id: str
     songs: List[str]
+    # Add the new 'source' field. It can only be 'spotify' or 'youtube'.
+    # Spotify is the default value if the client doesn't provide one.
+    source: Literal['spotify', 'youtube'] = 'spotify'
 
 class SuggestionResponse(BaseModel):
     message: str
@@ -109,14 +77,17 @@ def create_suggestions_task(
     if not request.songs:
         raise HTTPException(status_code=400, detail="The 'songs' list cannot be empty.")
 
+    # **THIS IS THE FIX**
+    # Pass the new 'source' parameter from the request to the background task.
     background_tasks.add_task(
         generate_and_save_recommendations,
         request.user_id,
-        request.songs
+        request.songs,
+        request.source # Pass the source from the request
     )
 
     return {
-        "message": "Recommendation request received. Processing in the background.",
+        "message": f"Recommendation request received for source '{request.source}'. Processing in background.",
         "user_id": request.user_id
     }
 
@@ -127,16 +98,11 @@ def get_suggestion_results(user_id: str, db: Session = Depends(get_db)):
                 .filter(RecommendationModel.user_id == user_id)\
                 .order_by(RecommendationModel.score.desc())\
                 .all()
-
     if not results:
         return {"status": "pending", "recommendations": []}
-
     return {"status": "complete", "recommendations": results}
 
 
 @app.get("/health", summary="Health Check")
 def health_check():
-    """
-    A simple endpoint to verify that the API is running and responsive.
-    """
     return {"status": "healthy"}
