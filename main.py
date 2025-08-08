@@ -4,8 +4,7 @@
 # This module defines the FastAPI application, including all API endpoints.
 # It serves as the main entrypoint for the microservice.
 #
-# To run this application:
-# uvicorn main:app --reload
+
 # ------------------------------------------------------------------------------
 
 # --- Imports ---
@@ -15,8 +14,9 @@ from typing import List
 from sqlalchemy.orm import Session
 
 # Import our own modules.
-from database import get_db, create_db_and_tables
-from models import Recommendation as RecommendationModel
+# Corrected the import for create_db_and_tables to point to models.py
+from database import get_db
+from models import Recommendation as RecommendationModel, create_db_and_tables
 from processing import generate_and_save_recommendations
 
 # --- Initial Application Setup ---
