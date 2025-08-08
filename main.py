@@ -7,8 +7,19 @@
 
 # ------------------------------------------------------------------------------
 
+# ==============================================================================
+# MAIN API APPLICATION
+# ==============================================================================
+# This module defines the FastAPI application, including all API endpoints.
+# It serves as the main entrypoint for the microservice.
+#
+# To run this application:
+# uvicorn main:app --reload
+# ------------------------------------------------------------------------------
+
 # --- Imports ---
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware # Import CORS Middleware
 from pydantic import BaseModel
 from typing import List
 from sqlalchemy.orm import Session
@@ -27,6 +38,19 @@ app = FastAPI(
     description="A REST API to get song suggestions based on content-based filtering using Spotify's audio features.",
     version="2.0.0"
 )
+
+# --- CORS (Cross-Origin Resource Sharing) Middleware ---
+# This middleware allows your frontend (running on a different domain) to
+# communicate with this backend API. Without this, browsers will block
+# the requests for security reasons.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins. For production, you might want to restrict this to your frontend's domain.
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods (GET, POST, etc.).
+    allow_headers=["*"],  # Allows all headers.
+)
+
 
 # This event handler runs once when the application starts up.
 @app.on_event("startup")
@@ -137,4 +161,5 @@ def health_check():
     A simple endpoint to verify that the API is running and responsive.
     """
     return {"status": "healthy"}
+
 
