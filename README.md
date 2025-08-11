@@ -1,16 +1,15 @@
----
 
-# 🎵 Enhanced Music Suggestion API
+
+## 🎵 Enhanced Music Suggestion API
 
 A FastAPI microservice that provides music suggestions using the YouTube Data API v3. The service analyzes a user's liked songs and returns similar tracks. It includes robust fallback mechanisms to always return relevant results when possible.
 
-Production URL: https://song-suggest-microservice.onrender.com
+-Production URL: https://song-suggest-microservice.onrender.com
 
----
 
-## ✅ API Contract (Unchanged)
+## ✅ API Contract
 
-The REST API remains the same. No frontend changes are required.
+The REST API remains the same as V1
 
 1) POST /suggestions
 - Description: Get song suggestions based on multiple liked songs for a user.
