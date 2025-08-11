@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 from functools import lru_cache
 import logging
 import re
@@ -12,6 +12,10 @@ import urllib.parse
 import time
 import random
 from dotenv import load_dotenv
+from sqlalchemy.orm import Session
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from db import init_db, get_session, User, UserLikedSong, VideoFeature, QueryCache
 
 # Load environment variables from .env file
 load_dotenv()
@@ -45,7 +49,12 @@ if not YOUTUBE_API_KEY:
 else:
     logger.info("YouTube API key loaded successfully.")
 
-# In-memory store for liked songs
+@app.on_event("startup")
+def on_startup() -> None:
+    # Initialize database schema
+    init_db()
+
+# In-memory store for liked songs (kept for backward-compat/local cache)
 liked_songs_store: Dict[str, List[str]] = {}
 
 # Pydantic models
@@ -70,6 +79,42 @@ class LikedSongsRequest(BaseModel):
 
 # Cache settings
 CACHE_TTL = 3600
+
+# Simple in-process cache for suggestions: {key: (timestamp, suggestions)}
+_suggestion_cache: Dict[str, Tuple[float, List[dict]]] = {}
+
+def _cache_get(key: str) -> Optional[List[dict]]:
+    now = time.time()
+    entry = _suggestion_cache.get(key)
+    if not entry:
+        return None
+    ts, data = entry
+    if now - ts > CACHE_TTL:
+        _suggestion_cache.pop(key, None)
+        return None
+    return data
+
+def _cache_set(key: str, value: List[dict]) -> None:
+    _suggestion_cache[key] = (time.time(), value)
+
+def _persist_user_likes(db: Session, user_external_id: str, songs: List[str]) -> None:
+    user = db.query(User).filter_by(user_id=user_external_id).one_or_none()
+    if not user:
+        user = User(user_id=user_external_id)
+        db.add(user)
+        db.flush()
+    # Remove existing likes and add fresh
+    db.query(UserLikedSong).filter_by(user_id=user.id).delete()
+    for s in songs:
+        db.add(UserLikedSong(user_id=user.id, song_name=s))
+    db.commit()
+
+def _load_user_likes(db: Session, user_external_id: str) -> List[str]:
+    user = db.query(User).filter_by(user_id=user_external_id).one_or_none()
+    if not user:
+        return []
+    rows = db.query(UserLikedSong).filter_by(user_id=user.id).all()
+    return [r.song_name for r in rows]
 
 # --- START OF NEW FALLBACK FUNCTION ---
 def get_popular_song_fallback() -> Optional[List[dict]]:
@@ -133,9 +178,7 @@ def get_popular_song_fallback() -> Optional[List[dict]]:
         return None
 # --- END OF NEW FALLBACK FUNCTION ---
 
-@sleep_and_retry
-@limits(calls=RATE_LIMIT_CALLS, period=RATE_LIMIT_PERIOD)
-@lru_cache(maxsize=100)
+@lru_cache(maxsize=128)
 def get_youtube_suggestions(song_name: str) -> Optional[List[dict]]:
     """
     Fetch music suggestions from YouTube with improved filtering and genre-based scoring.
@@ -168,6 +211,11 @@ def get_youtube_suggestions(song_name: str) -> Optional[List[dict]]:
         original_title = original_video["snippet"]["title"].lower()
         original_channel = original_video["snippet"]["channelTitle"].lower()
 
+        # Build seed text from original video's snippet
+        seed_text = original_video["snippet"].get("title", "") + " " + \
+                    original_video["snippet"].get("channelTitle", "") + " " + \
+                    original_video["snippet"].get("description", "")
+
         # Step 2: Fetch video details for duration
         video_url = (
             f"https://www.googleapis.com/youtube/v3/videos?part=contentDetails,statistics"
@@ -193,55 +241,93 @@ def get_youtube_suggestions(song_name: str) -> Optional[List[dict]]:
             logger.warning(f"No related videos found for video ID: {original_video_id}")
             return None
 
-        # Step 4: Filter and score suggestions
+        # Step 4: Fetch details for related items, filter and score with TF-IDF similarity
         suggestions = []
         unwanted_keywords = ['live', 'cover', 'remix', 'karaoke', 'instrumental', 'tutorial', 'reaction', 'lyrics']
+        # Batch fetch details for all related video IDs
+        related_ids = [it["id"]["videoId"] for it in related_items if "videoId" in it.get("id", {})]
+        if not related_ids:
+            return None
+        # Fetch snippet+details+stats for richer features
+        details_url = (
+            f"https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,statistics&id={','.join(related_ids)}&key={YOUTUBE_API_KEY}"
+        )
+        details_resp = requests.get(details_url, timeout=8)
+        if details_resp.status_code != 200:
+            logger.error(f"Details batch API error: {details_resp.status_code} - {details_resp.text}")
+            return None
+        details_map = {item["id"]: item for item in details_resp.json().get("items", [])}
+
+        # Build corpus for TF-IDF: [seed_text] + [candidate_texts]
+        candidate_texts = []
+        candidate_objects = []
         for item in related_items:
             title = item["snippet"]["title"].lower()
             channel = item["snippet"]["channelTitle"].lower()
             if any(keyword in title for keyword in unwanted_keywords):
                 continue
-            
-            video_id = item["id"]["videoId"]
-            video_details_url = (
-                f"https://www.googleapis.com/youtube/v3/videos?part=contentDetails,statistics"
-                f"&id={video_id}&key={YOUTUBE_API_KEY}"
-            )
-            video_details_resp = requests.get(video_details_url, timeout=5)
-            if video_details_resp.status_code != 200:
+            vid = item["id"].get("videoId")
+            if not vid:
                 continue
-            
-            video_details_item = video_details_resp.json().get('items', [{}])[0]
-            video_duration = video_details_item.get("contentDetails", {}).get("duration", "")
-            video_views = int(video_details_item.get("statistics", {}).get("viewCount", 0))
-
-            match = re.search(r'(\d+)M', video_duration)
+            details = details_map.get(vid)
+            if not details:
+                continue
+            duration = details.get("contentDetails", {}).get("duration", "")
+            stats = details.get("statistics", {})
+            video_views = int(stats.get("viewCount", 0) or 0)
+            # Skip ultra short videos (< 1 minute)
+            match = re.search(r"(\d+)M", duration)
             minutes = int(match.group(1)) if match else 0
             if "PT" in video_duration and minutes < 1:
                 continue
 
-            # Scoring
-            score = 1.0
+            snippet = details.get("snippet", {})
+            desc = snippet.get("description", "")
+            tags = snippet.get("tags", [])
+            combined_text = " ".join([
+                snippet.get("title", ""),
+                snippet.get("channelTitle", ""),
+                desc,
+                " ".join(tags) if isinstance(tags, list) else str(tags),
+            ])
+
+            # Heuristic base score
+            base_score = 1.0
             if "official video" in title or "official music video" in title:
-                score += 0.8
+                base_score += 0.8
             if any(word in title for word in original_title.split()):
-                score += 0.5
+                base_score += 0.5
             if channel == original_channel:
-                score += 0.4
+                base_score += 0.4
             if video_views > 100000:
-                score += 0.3 * (video_views / 1000000)
+                base_score += 0.3 * (video_views / 1000000)
+
+            candidate_texts.append(combined_text)
+            candidate_objects.append((vid, snippet.get("title", ""), snippet.get("channelTitle", ""), base_score))
+
+        if not candidate_objects:
+            return None
+
+        vectorizer = TfidfVectorizer(max_features=5000, stop_words="english")
+        tfidf_matrix = vectorizer.fit_transform([seed_text] + candidate_texts)
+        sims = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:]).flatten()
+
+        for (vid, title_raw, channel_raw, base), sim in zip(candidate_objects, sims):
+            total_score = base + 1.5 * float(sim)
             suggestions.append({
-                "title": item["snippet"]["title"],
-                "artist": item["snippet"]["channelTitle"],
-                "youtube_video_id": video_id,
-                "score": min(score, 3.0)
+                "title": title_raw,
+                "artist": channel_raw,
+                "youtube_video_id": vid,
+                "score": min(total_score, 4.0)
             })
+
+        # Sort by score desc and cap
+        suggestions = sorted(suggestions, key=lambda x: x["score"], reverse=True)
         return suggestions[:10]
 
     except requests.exceptions.RequestException as e:
         logger.error(f"Network error fetching suggestions for {song_name}: {str(e)}")
         return None
-    except Exception as e:
         logger.error(f"Unexpected error for {song_name}: {str(e)}")
         return None
 
@@ -251,6 +337,12 @@ def combine_suggestions(song_names: List[str]) -> List[dict]:
     Combine suggestions from multiple songs, rank by score, and ensure uniqueness.
     If no suggestions are found, it triggers a fallback to popular songs.
     """
+    # Use cache to reduce latency
+    cache_key = "|".join(sorted([s.lower().strip() for s in song_names]))
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     all_suggestions = []
     video_id_set = set()
     for song in song_names:
@@ -278,7 +370,9 @@ def combine_suggestions(song_names: List[str]) -> List[dict]:
             unique_suggestions.append(suggestion)
             seen_titles.add(title)
 
-    return unique_suggestions[:5]
+    result = unique_suggestions[:5]
+    _cache_set(cache_key, result)
+    return result
 
 @app.get(
     "/liked-songs",
@@ -287,7 +381,11 @@ def combine_suggestions(song_names: List[str]) -> List[dict]:
     description="Returns the list of liked songs for a given user ID"
 )
 async def get_liked_songs(user_id: str = Query(..., min_length=1, description="User ID to fetch liked songs")):
-    liked_songs = liked_songs_store.get(user_id, [])
+    # Prefer DB, fallback to in-memory cache
+    with get_session() as db:
+        liked_songs = _load_user_likes(db, user_id)
+    if not liked_songs:
+        liked_songs = liked_songs_store.get(user_id, [])
     return JSONResponse(content={"liked_songs": liked_songs})
 
 # --- MODIFIED post_suggestions FOR BETTER ERROR HANDLING ---
@@ -303,7 +401,10 @@ async def post_suggestions(request: LikedSongsRequest):
     if not request.songs:
         raise HTTPException(status_code=400, detail="At least one song must be provided in the request.")
     
+    # Persist likes in DB and maintain in-memory cache
     liked_songs_store[request.user_id] = request.songs
+    with get_session() as db:
+        _persist_user_likes(db, request.user_id, request.songs)
     suggestions = combine_suggestions(request.songs)
     
     if not suggestions:
