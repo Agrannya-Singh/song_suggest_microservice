@@ -71,6 +71,17 @@ Fallback mechanisms
 
 Persistence
 - Liked songs are saved per user via SQLAlchemy using SQLite by default. This is swappable to Postgres by setting `DATABASE_URL` without code changes. The API surface remains unchanged.
+- 
+Client Layer: External applications that consume the API
+API Gateway: FastAPI with CORS middleware for cross-origin support
+REST Endpoints: Three main endpoints for liked songs, suggestions, and health checks
+Business Logic: Core functions handling song persistence, suggestion generation, and fallback mechanisms
+Caching Strategy: Dual-layer caching with in-memory LRU cache and database-backed cache
+ML Processing: TF-IDF vectorization and cosine similarity for intelligent song recommendations
+Data Access Layer: SQLAlchemy ORM with multiple models for users, songs, and recommendations
+External Integration: YouTube Data API v3 for fetching video metadata and suggestions
+Storage: SQLite database for persistent storage
+The architecture follows a clean separation of concerns with proper layering, caching for performance, and a fallback mechanism to ensure reliability.
 
 ---
 
