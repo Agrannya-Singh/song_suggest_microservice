@@ -88,7 +88,7 @@ The architecture follows a clean separation of concerns with proper layering, ca
 
 
 ```mermaid
-%%{init: {"theme":"dark","themeVariables":{"primaryColor":"#1DB954","primaryTextColor":"#FFFFFF","primaryBorderColor":"#1DB954","lineColor":"#1DB954","secondaryColor":"#191414","tertiaryColor":"#212121","background":"#000000","mainBkg":"#191414","secondBkg":"#212121","tertiaryBkg":"#1DB954","textColor":"#FFFFFF","labelTextColor":"#FFFFFF","borderColor":"#1DB954","edgeLabelBackground":"#191414"}}}%%
+%%{init: {"theme":"light"}%%
 graph TB
   subgraph CLIENT["🎵 CLIENT LAYER"]
     Client["Client Applications\nWeb • Mobile • Desktop"]
