@@ -83,6 +83,132 @@ External Integration: YouTube Data API v3 for fetching video metadata and sugges
 Storage: SQLite database for persistent storage
 The architecture follows a clean separation of concerns with proper layering, caching for performance, and a fallback mechanism to ensure reliability.
 
+
+<!-- This is an auto-generated reply by CodeRabbit -->
+
+
+```mermaid
+%%{init: {"theme":"dark","themeVariables":{"primaryColor":"#1DB954","primaryTextColor":"#FFFFFF","primaryBorderColor":"#1DB954","lineColor":"#1DB954","secondaryColor":"#191414","tertiaryColor":"#212121","background":"#000000","mainBkg":"#191414","secondBkg":"#212121","tertiaryBkg":"#1DB954","textColor":"#FFFFFF","labelTextColor":"#FFFFFF","borderColor":"#1DB954","edgeLabelBackground":"#191414"}}}%%
+graph TB
+  subgraph CLIENT["🎵 CLIENT LAYER"]
+    Client["Client Applications\nWeb • Mobile • Desktop"]
+  end
+
+  subgraph GATEWAY["⚡ API GATEWAY"]
+    CORS["CORS Middleware\nCross-Origin Resource Sharing"]
+    FastAPI["FastAPI Server\nAsync • Fast • Modern"]
+  end
+
+  subgraph ENDPOINTS["🔌 REST ENDPOINTS"]
+    GET_LIKED["GET /liked-songs\nRetrieve User Favorites"]
+    POST_SUGGEST["POST /suggestions\nAI-Powered Recommendations"]
+    GET_HEALTH["GET /health\nService Status Check"]
+  end
+
+  subgraph CORE["🎯 CORE LOGIC"]
+    AUTH["Request Validator\nPydantic Models"]
+    COMBINE["Suggestion Engine\ncombine_suggestions()"]
+    YT_SUGGEST["YouTube Integration\nget_youtube_suggestions()"]
+    FALLBACK["Fallback System\nget_popular_song_fallback()"]
+    PERSIST["Like Persistence\n_persist_user_likes()"]
+    LOAD["Like Retrieval\n_load_user_likes()"]
+  end
+
+  subgraph CACHE["💾 CACHING SYSTEM"]
+    MEM_CACHE["Memory Cache\nLRU Cache\nTTL: 3600s"]
+    DB_CACHE["Database Cache\nQueryCache Table"]
+  end
+
+  subgraph ML["🤖 ML PIPELINE"]
+    TFIDF["TF-IDF Vectorizer\nText Feature Extraction"]
+    COSINE["Cosine Similarity\nContent Matching"]
+    SCORING["Scoring Algorithm\nHeuristic + ML Fusion"]
+  end
+
+  subgraph DATA["📊 DATA LAYER"]
+    SESSION["SQLAlchemy ORM\nSession Management"]
+    subgraph MODELS["Database Models"]
+      USER_MODEL["User"]
+      LIKED_MODEL["UserLikedSong"]
+      SONG_MODEL["Song"]
+      REC_MODEL["Recommendation"]
+      VIDEO_MODEL["VideoFeature"]
+      CACHE_MODEL["QueryCache"]
+    end
+  end
+
+  subgraph EXTERNAL["🌐 EXTERNAL APIS"]
+    YOUTUBE["YouTube Data API v3\nSearch • Videos • Related"]
+  end
+
+  subgraph STORAGE["🗄️ STORAGE"]
+    SQLITE["SQLite Database\nmusic_recommender.db"]
+  end
+
+  %% Request Flow
+  Client -->|HTTPS| CORS
+  CORS --> FastAPI
+  FastAPI --> GET_LIKED
+  FastAPI --> POST_SUGGEST
+  FastAPI --> GET_HEALTH
+
+  %% GET /liked-songs flow
+  GET_LIKED -.->|Validate| AUTH
+  AUTH -.-> LOAD
+  LOAD -.-> SESSION
+  SESSION -.-> USER_MODEL
+  SESSION -.-> LIKED_MODEL
+
+  %% POST /suggestions flow
+  POST_SUGGEST -->|Validate| AUTH
+  AUTH --> PERSIST
+  PERSIST --> SESSION
+  AUTH --> COMBINE
+  COMBINE -->|Cache Hit?| MEM_CACHE
+  COMBINE -->|Cache Miss| YT_SUGGEST
+  YT_SUGGEST -->|API Call| YOUTUBE
+  YOUTUBE -->|Video Data| TFIDF
+  TFIDF --> COSINE
+  COSINE --> SCORING
+  SCORING --> COMBINE
+  COMBINE -->|Fallback| FALLBACK
+  FALLBACK -->|API Call| YOUTUBE
+  COMBINE -->|Store| MEM_CACHE
+
+  %% Database connections
+  SESSION --> SQLITE
+  USER_MODEL -.-> SQLITE
+  LIKED_MODEL -.-> SQLITE
+  SONG_MODEL -.-> SQLITE
+  REC_MODEL -.-> SQLITE
+  VIDEO_MODEL -.-> SQLITE
+  CACHE_MODEL -.-> SQLITE
+  DB_CACHE -.-> CACHE_MODEL
+
+  %% Spotify-inspired styling
+  classDef spotifyGreen fill:#1DB954,stroke:#FFFFFF,stroke-width:2px,color:#000000
+  classDef spotifyBlack fill:#191414,stroke:#1DB954,stroke-width:2px,color:#FFFFFF
+  classDef spotifyGray fill:#212121,stroke:#1DB954,stroke-width:1px,color:#FFFFFF
+  classDef spotifyWhite fill:#FFFFFF,stroke:#1DB954,stroke-width:2px,color:#000000
+  classDef spotifyAccent fill:#1ED760,stroke:#FFFFFF,stroke-width:2px,color:#000000
+  classDef externalStyle fill:#535353,stroke:#1DB954,stroke-width:2px,color:#FFFFFF
+
+  class GET_LIKED,POST_SUGGEST,GET_HEALTH spotifyGreen
+  class Client,FastAPI spotifyAccent
+  class AUTH,COMBINE,YT_SUGGEST,FALLBACK,PERSIST,LOAD spotifyBlack
+  class MEM_CACHE,DB_CACHE,SESSION spotifyGray
+  class TFIDF,COSINE,SCORING spotifyWhite
+  class YOUTUBE externalStyle
+  class SQLITE spotifyGray
+  class USER_MODEL,LIKED_MODEL,SONG_MODEL,REC_MODEL,VIDEO_MODEL,CACHE_MODEL spotifyGray
+  class CORS spotifyBlack
+```
+
+The fix involved removing spaces after commas in the class assignments. The diagram now properly renders with the Spotify-inspired dark theme and green accents as intended.
+
+_Originally posted by @coderabbitai[bot] in https://github.com/Agrannya-Singh/Tune_Trace_backend/issues/1#issuecomment-3173417275_
+            
+
 ---
 
 ## 🔌 Usage Examples
