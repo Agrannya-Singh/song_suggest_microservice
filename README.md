@@ -1,15 +1,28 @@
+---
 
+# 🎵 Enhanced Music Suggestion API
 
-# Endpoints
+A FastAPI microservice that provides music suggestions using the YouTube Data API v3. The service analyzes a user's liked songs and returns similar tracks. It includes robust fallback mechanisms to always return relevant results when possible.
 
-## 🎵 Enhanced Music Suggestion API
+Production URL: https://song-suggest-microservice.onrender.com
 
-A FastAPI-based service that provides personalized music suggestions using the YouTube Data API v3. The API analyzes your liked songs and suggests similar music, with a fallback to popular songs when no matches are found.
+---
 
-### ✨ Features
+## ✅ API Contract (Unchanged)
 
-#### Example Response
-```json
+The REST API remains the same. No frontend changes are required.
+
+1) POST /suggestions
+- Description: Get song suggestions based on multiple liked songs for a user.
+- Request body (JSON):
+```
+{
+  "user_id": "user-123",
+  "songs": ["Shape of You", "Blinding Lights", "Watermelon Sugar"]
+}
+```
+- Response (200):
+```
 {
   "suggestions": [
     {
@@ -21,82 +34,118 @@ A FastAPI-based service that provides personalized music suggestions using the Y
   ]
 }
 ```
+- Errors: 400 (bad input), 404 (no matches and fallback failed), 500 (configuration)
 
-#### Response Codes
-- `200`: Successful response with suggestions.
-- `404`: No suggestions found for the given song.
-- `500`: Server error or API key not configured.
+2) GET /liked-songs?user_id=xxx
+- Returns the list of liked songs stored for the given user.
+
+3) GET /health
+- Returns `{ "status": "healthy" }` if the service is running.
 
 ---
 
-## Health Check
+## 🔍 ML Suggestion Engine (Overview)
 
-- **Endpoint:** `/health`
-- **Method:** GET
-- **Description:** Checks if the API is running.
+Goal: Provide high‑quality, low‑latency song recommendations using only the YouTube Data API and lightweight in‑process modeling.
 
-### Example Request
-```bash
-curl -X GET "https://song-suggest-microservice.onrender.com//health"
+Core approach: Content‑based ranking with TF‑IDF over YouTube metadata
+- Seed selection: For each input song string, the service searches YouTube (music category) and picks the top relevant video as the seed.
+- Related candidates: Uses YouTube's related videos API to retrieve candidate music videos.
+- Batch enrichment: Fetches candidate details in a single batch call (snippet, statistics, contentDetails) to minimize latency.
+- Text features: Builds a text corpus from title + channel name + description + tags.
+- TF‑IDF similarity: Computes TF‑IDF vectors and cosine similarity between the seed text and each candidate's text.
+- Heuristic score: Combines content similarity with metadata signals such as:
+  - Official video phrases in title
+  - Word overlap with seed title
+  - Same channel as seed
+  - View count scaling (light popularity prior)
+- Aggregation: Merges suggestions across multiple liked songs, deduplicates by video ID and title, sorts by score, and returns the top 5.
+
+Caching and latency optimizations
+- Per‑request in‑process cache with TTL for combined suggestions.
+- Function‑level LRU cache for per‑song suggestion results.
+- Batch video details fetch to reduce round trips to YouTube.
+
+Fallback mechanisms
+- If no suggestions are found across all liked songs, the service fetches from YouTube's most popular music videos (category 10). It prefers videos with high view counts and returns a high‑confidence popular track.
+- If even the popular feed is unavailable, the API returns a 404 with a clear error message.
+
+Persistence
+- Liked songs are saved per user via SQLAlchemy using SQLite by default. This is swappable to Postgres by setting `DATABASE_URL` without code changes. The API surface remains unchanged.
+
+---
+
+## 🔌 Usage Examples
+
+curl (POST /suggestions)
+```
+curl -X POST \
+  https://song-suggest-microservice.onrender.com/suggestions \
+  -H "Content-Type: application/json" \
+  -d '{
+        "user_id": "demo-user",
+        "songs": ["Blinding Lights", "Shape of You"]
+      }'
 ```
 
-### Example Response
-```json
-{
-  "status": "healthy"
+curl (GET /liked-songs)
+```
+curl "https://song-suggest-microservice.onrender.com/liked-songs?user_id=demo-user"
+```
+
+curl (GET /health)
+```
+curl "https://song-suggest-microservice.onrender.com/health"
+```
+
+---
+
+## 🌐 Frontend Integration
+
+No changes required on the frontend. Continue calling the same endpoints and parsing the same JSON structure. Example (fetch):
+```
+async function getSuggestions(userId, songs) {
+  const res = await fetch("https://song-suggest-microservice.onrender.com/suggestions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId, songs })
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  return data.suggestions;
 }
 ```
 
 ---
 
-# Frontend Integration
+## ⚙️ Configuration
 
-## Prerequisites
-- Ensure you have a valid **YouTube Data API key** set as an environment variable (`YOUTUBE_API_KEY`) on Render.
+Environment variables (Render -> Environment)
+- YOUTUBE_API_KEY: Required.
+- DATABASE_URL: Optional (defaults to SQLite `sqlite:///app.db`). For Render Postgres, provide the full connection URL.
 
-## JavaScript Example (Frontend)
-```javascript
-async function getMusicSuggestions(songName) {
-  try {
-    const response = await fetch(`https://song-suggest-microservice.onrender.com//suggestions?song_name=${encodeURIComponent(songName)}`);
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-    const data = await response.json();
-    return data.suggestions;
-  } catch (error) {
-    console.error('Error fetching suggestions:', error);
-    return [];
-  }
-}
-
-// Usage
-getMusicSuggestions("Bohemian Rhapsody").then(suggestions => {
-  console.log(suggestions);
-});
+Start command (Render)
+```
+uvicorn main:app --host 0.0.0.0 --port $PORT
 ```
 
+Dependencies
+- See `requirements.txt`. Includes SQLAlchemy and scikit‑learn for the ranking logic.
+
+CORS
+- CORS is set to allow all origins by default for ease of integration. Restrict in production as needed.
+
 ---
 
-# CORS Policy
-- The API currently allows CORS from all origins (`*`) for development convenience.
-- For production, update the `allow_origins` in the CORS middleware to restrict access to only your frontend domains.
+## 🚀 Deployment Notes for Render
+
+- Ensure YOUTUBE_API_KEY is set as a secret.
+- If using Render Postgres, set DATABASE_URL accordingly.
+- Build and runtime are standard; scikit‑learn is included for TF‑IDF and cosine similarity. Render will build wheels automatically; no extra steps typically required.
 
 ---
 
-# Deployment on Render
-
-1. **Create a Render Account:** Sign up at [render.com](https://render.com/).
-2. **Create a New Web Service:** Choose **Python** as the runtime.
-3. **Set the Start Command:**
-   ```bash
-   uvicorn main:app --host 0.0.0.0 --port $PORT
-   ```
-4. **Add Environment Variables:**
-   - `YOUTUBE_API_KEY`: Your YouTube Data API key.
-   - `PORT`: Automatically set by Render (usually `10000`).
-5. **Add Requirements:** Use the provided `requirements.txt` file.
-6. **Deploy:**
-   - Push your code to a GitHub repository.
-   - Connect the repository to Render and deploy.
-
+## 🔎 Health Check
+```
+GET https://song-suggest-microservice.onrender.com/health
+Response: { "status": "healthy" }
