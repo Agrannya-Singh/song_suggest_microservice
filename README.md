@@ -70,7 +70,8 @@ Fallback mechanisms
 - If even the popular feed is unavailable, the API returns a 404 with a clear error message.
 
 Persistence
-- Liked songs are saved per user via SQLAlchemy using SQLite by default. This is swappable to Postgres by setting `DATABASE_URL` without code changes. The API surface remains unchanged.
+- Liked songs are saved per user via SQLAlchemy using SQLite by default.
+- Concurrent Postgres support via write-through replication is enabled when `POSTGRES_DATABASE_URL` (or a Postgres `DATABASE_URL`) is provided. Reads prefer Postgres by default and can be switched via `DB_READ_PREFERENCE`.
 - 
 Client Layer: External applications that consume the API
 API Gateway: FastAPI with CORS middleware for cross-origin support
@@ -258,7 +259,12 @@ async function getSuggestions(userId, songs) {
 
 Environment variables (Render -> Environment)
 - YOUTUBE_API_KEY: Required.
-- DATABASE_URL: Optional (defaults to SQLite `sqlite:///app.db`). For Render Postgres, provide the full connection URL.
+- SQLITE_DATABASE_URL: Optional. Defaults to `sqlite:///app.db`.
+- POSTGRES_DATABASE_URL: Optional. Render Postgres connection URL. If omitted but `DATABASE_URL` is set to a Postgres URL, it will be used.
+- DATABASE_URL: Backward-compatibility for Postgres.
+- DB_READ_PREFERENCE: `postgres` (default) or `sqlite`.
+- REDIS_URL: Optional. Render internal Redis URL (free tier supported).
+- REDIS_TTL_SECONDS: Optional. Default `3600`.
 
 Start command (Render)
 ```
@@ -276,7 +282,8 @@ CORS
 ## 🚀 Deployment Notes for Render
 
 - Ensure YOUTUBE_API_KEY is set as a secret.
-- If using Render Postgres, set DATABASE_URL accordingly.
+- If using Render Postgres, set POSTGRES_DATABASE_URL (or DATABASE_URL with a Postgres URL).
+- If using Render Redis, set REDIS_URL to the internal connection string.
 - Build and runtime are standard; scikit‑learn is included for TF‑IDF and cosine similarity. Render will build wheels automatically; no extra steps typically required.
 
 ---

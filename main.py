@@ -6,6 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Tuple
 from functools import lru_cache
+import redis
+import json
 import logging
 import re
 import urllib.parse
@@ -15,7 +17,7 @@ from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from db import init_db, get_session, User, UserLikedSong, VideoFeature, QueryCache
+from db import init_db, get_read_session, get_write_sessions, User, UserLikedSong, VideoFeature, QueryCache
 
 # Load environment variables from .env file
 load_dotenv()
@@ -42,12 +44,28 @@ logger = logging.getLogger(__name__)
 
 # Environment variable for YouTube API key
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
+REDIS_URL = os.getenv("REDIS_URL")
+REDIS_TTL_SECONDS = int(os.getenv("REDIS_TTL_SECONDS", "3600"))
 
 # Validate API key at startup
 if not YOUTUBE_API_KEY:
     logger.warning("YouTube API key not found. Please set YOUTUBE_API_KEY environment variable.")
 else:
     logger.info("YouTube API key loaded successfully.")
+
+# Optional Redis client
+redis_client: Optional[redis.Redis] = None
+if REDIS_URL:
+    try:
+        redis_client = redis.from_url(REDIS_URL, decode_responses=True)
+        try:
+            redis_client.ping()
+            logger.info("Connected to Redis successfully.")
+        except Exception:
+            logger.warning("Redis reachable but ping failed; continuing without strict dependency.")
+    except Exception as e:
+        logger.error(f"Failed to initialize Redis: {e}")
+        redis_client = None
 
 @app.on_event("startup")
 def on_startup() -> None:
@@ -97,24 +115,34 @@ def _cache_get(key: str) -> Optional[List[dict]]:
 def _cache_set(key: str, value: List[dict]) -> None:
     _suggestion_cache[key] = (time.time(), value)
 
-def _persist_user_likes(db: Session, user_external_id: str, songs: List[str]) -> None:
-    user = db.query(User).filter_by(user_id=user_external_id).one_or_none()
-    if not user:
-        user = User(user_id=user_external_id)
-        db.add(user)
-        db.flush()
-    # Remove existing likes and add fresh
-    db.query(UserLikedSong).filter_by(user_id=user.id).delete()
-    for s in songs:
-        db.add(UserLikedSong(user_id=user.id, song_name=s))
-    db.commit()
+def _persist_user_likes_write_through(user_external_id: str, songs: List[str]) -> None:
+    for db in get_write_sessions():
+        try:
+            user = db.query(User).filter_by(user_id=user_external_id).one_or_none()
+            if not user:
+                user = User(user_id=user_external_id)
+                db.add(user)
+                db.flush()
+            db.query(UserLikedSong).filter_by(user_id=user.id).delete()
+            for s in songs:
+                db.add(UserLikedSong(user_id=user.id, song_name=s))
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Write-through failed for user {user_external_id}: {e}")
+        finally:
+            db.close()
 
-def _load_user_likes(db: Session, user_external_id: str) -> List[str]:
-    user = db.query(User).filter_by(user_id=user_external_id).one_or_none()
-    if not user:
-        return []
-    rows = db.query(UserLikedSong).filter_by(user_id=user.id).all()
-    return [r.song_name for r in rows]
+def _load_user_likes(user_external_id: str) -> List[str]:
+    db = get_read_session()
+    try:
+        user = db.query(User).filter_by(user_id=user_external_id).one_or_none()
+        if not user:
+            return []
+        rows = db.query(UserLikedSong).filter_by(user_id=user.id).all()
+        return [r.song_name for r in rows]
+    finally:
+        db.close()
 
 # --- START OF NEW FALLBACK FUNCTION ---
 def get_popular_song_fallback() -> Optional[List[dict]]:
@@ -278,7 +306,7 @@ def get_youtube_suggestions(song_name: str) -> Optional[List[dict]]:
             # Skip ultra short videos (< 1 minute)
             match = re.search(r"(\d+)M", duration)
             minutes = int(match.group(1)) if match else 0
-            if "PT" in video_duration and minutes < 1:
+            if "PT" in duration and minutes < 1:
                 continue
 
             snippet = details.get("snippet", {})
@@ -339,7 +367,16 @@ def combine_suggestions(song_names: List[str]) -> List[dict]:
     """
     # Use cache to reduce latency
     cache_key = "|".join(sorted([s.lower().strip() for s in song_names]))
-    cached = _cache_get(cache_key)
+    cached: Optional[List[dict]] = None
+    if redis_client:
+        try:
+            val = redis_client.get(f"suggestions:{cache_key}")
+            if val:
+                cached = json.loads(val)
+        except Exception as e:
+            logger.warning(f"Redis get failed: {e}")
+    if cached is None:
+        cached = _cache_get(cache_key)
     if cached is not None:
         return cached
 
@@ -372,6 +409,11 @@ def combine_suggestions(song_names: List[str]) -> List[dict]:
 
     result = unique_suggestions[:5]
     _cache_set(cache_key, result)
+    if redis_client:
+        try:
+            redis_client.setex(f"suggestions:{cache_key}", REDIS_TTL_SECONDS, json.dumps(result))
+        except Exception as e:
+            logger.warning(f"Redis set failed: {e}")
     return result
 
 @app.get(
@@ -382,8 +424,7 @@ def combine_suggestions(song_names: List[str]) -> List[dict]:
 )
 async def get_liked_songs(user_id: str = Query(..., min_length=1, description="User ID to fetch liked songs")):
     # Prefer DB, fallback to in-memory cache
-    with get_session() as db:
-        liked_songs = _load_user_likes(db, user_id)
+    liked_songs = _load_user_likes(user_id)
     if not liked_songs:
         liked_songs = liked_songs_store.get(user_id, [])
     return JSONResponse(content={"liked_songs": liked_songs})
@@ -403,8 +444,7 @@ async def post_suggestions(request: LikedSongsRequest):
     
     # Persist likes in DB and maintain in-memory cache
     liked_songs_store[request.user_id] = request.songs
-    with get_session() as db:
-        _persist_user_likes(db, request.user_id, request.songs)
+    _persist_user_likes_write_through(request.user_id, request.songs)
     suggestions = combine_suggestions(request.songs)
     
     if not suggestions:

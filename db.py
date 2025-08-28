@@ -1,19 +1,35 @@
 from __future__ import annotations
 import os
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Dict, List
 from sqlalchemy import create_engine, String, Integer, DateTime, ForeignKey, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker, Session
 
-# Database URL (SQLite by default). Can be overridden with DATABASE_URL env var (e.g., postgres://...)
-DB_URL = os.getenv("DATABASE_URL", "sqlite:///app.db")
+# --- Dual database configuration ---
+# Backward compatibility: if DATABASE_URL is set to a Postgres URL, treat it as POSTGRES_DATABASE_URL.
+LEGACY_DB_URL = os.getenv("DATABASE_URL")
 
-# Create engine. For SQLite, enable check_same_thread=False to allow usage across threads in FastAPI.
-connect_args = {"check_same_thread": False} if DB_URL.startswith("sqlite") else {}
-engine = create_engine(DB_URL, echo=False, future=True, connect_args=connect_args)
+# Dedicated env vars
+SQLITE_DATABASE_URL = os.getenv("SQLITE_DATABASE_URL", "sqlite:///app.db")
+POSTGRES_DATABASE_URL = os.getenv("POSTGRES_DATABASE_URL") or (
+    LEGACY_DB_URL if (LEGACY_DB_URL or "").startswith("postgres") else None
+)
 
-# Session factory
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+# Read preference: 'postgres' or 'sqlite'
+DB_READ_PREFERENCE = os.getenv("DB_READ_PREFERENCE", "postgres").lower()
+
+# Create engines conditionally
+engines: Dict[str, object] = {}
+sessions: Dict[str, sessionmaker] = {}
+
+if SQLITE_DATABASE_URL:
+    sqlite_connect_args = {"check_same_thread": False} if SQLITE_DATABASE_URL.startswith("sqlite") else {}
+    engines["sqlite"] = create_engine(SQLITE_DATABASE_URL, echo=False, future=True, connect_args=sqlite_connect_args)
+    sessions["sqlite"] = sessionmaker(bind=engines["sqlite"], autoflush=False, autocommit=False, future=True)
+
+if POSTGRES_DATABASE_URL:
+    engines["postgres"] = create_engine(POSTGRES_DATABASE_URL, echo=False, future=True)
+    sessions["postgres"] = sessionmaker(bind=engines["postgres"], autoflush=False, autocommit=False, future=True)
 
 
 class Base(DeclarativeBase):
@@ -74,8 +90,28 @@ class VideoFeature(Base):
 
 
 def init_db() -> None:
-    Base.metadata.create_all(bind=engine)
+    # Create tables on all configured engines
+    for eng in engines.values():
+        Base.metadata.create_all(bind=eng)
 
 
-def get_session() -> Session:
-    return SessionLocal()
+def get_read_session() -> Session:
+    # Prefer configured read DB, fallback to available
+    if DB_READ_PREFERENCE == "postgres" and "postgres" in sessions:
+        return sessions["postgres"]()
+    if DB_READ_PREFERENCE == "sqlite" and "sqlite" in sessions:
+        return sessions["sqlite"]()
+    # Fallback order: postgres then sqlite
+    if "postgres" in sessions:
+        return sessions["postgres"]()
+    return sessions["sqlite"]()
+
+
+def get_write_sessions() -> List[Session]:
+    # Write-through to all configured databases to keep them in sync
+    result: List[Session] = []
+    if "sqlite" in sessions:
+        result.append(sessions["sqlite"]())
+    if "postgres" in sessions:
+        result.append(sessions["postgres"]())
+    return result
