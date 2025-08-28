@@ -37,8 +37,5 @@ This document outlines the recommended Render setup for running the service with
 - Do not commit secrets; set them in Render Environment.
 - If your Redis instance enforces auth, prefer `redis://default:PASS@HOST:PORT` format.
 
-### Example Values (do not commit to repo)
-- `POSTGRES_DATABASE_URL=postgresql://tune_trace_db_user:NHgWGfhyqDLbqK270dx1XKY1U9lBdawh@dpg-d2o7g3euk2gs73ajefv0-a/tune_trace_db`
-- `REDIS_URL=redis://red-d2b2cpemcj7s73e47s40:6379`
 
 
